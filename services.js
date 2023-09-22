@@ -3,6 +3,7 @@ require("aws-sdk/lib/maintenance_mode_message").suppress = true;
 const config = require("./config");
 AWS.config.update(config.aws_remote_config);
 var docClient = new AWS.DynamoDB.DocumentClient();
+const fs = require('fs');
 
 const getDispositionValues = async () => {
   const params = {
@@ -80,8 +81,22 @@ const getCategory = (result, item) => {
   }
 };
 
+const writeFile = (dataToBeWritten) => {
+  const jsonData = JSON.stringify(dataToBeWritten, null, 2);
+  fs.writeFile(config.FILE_PATH, jsonData, 'utf8', (err) => {
+    if(err){
+      console.log("error writing JSON file: ", err);
+    } else{
+      console.log("Unprocessed data has been written to ", config.FILE_PATH);
+    }
+  })
+
+}
+
+
 module.exports = {
   getDispositionValues,
   getSubCategory,
   getCategory,
+  writeFile
 };

@@ -3,6 +3,7 @@ const config = require("./config");
 AWS.config.update(config.aws_remote_config);
 var docClient = new AWS.DynamoDB.DocumentClient();
 var services = require('./services');
+var dataDump = require('./data');
 
 const getAgentInteractionData = async () => {
   try{
@@ -15,18 +16,20 @@ const getAgentInteractionData = async () => {
         TableName: config.AGENT_INTERACTION_TABLE,
         Limit: batchSize,
         ExclusiveStartKey: lastEvaluatedKey,
-        FilterExpression: "#eventDate BETWEEN :start AND :end",
-        ExpressionAttributeNames: {"#eventDate" : "timestamp"},
+        FilterExpression: "(#eventDate BETWEEN :start AND :end)",
+        ProjectionExpression:"contactId, username, #eventDate, disposition, queuename, #type",
+        ExpressionAttributeNames: {"#eventDate" : "timestamp", "#type": "type"},
+        //change the start and end date accordingly
         ExpressionAttributeValues: {
-          ":start": "2023-08-01",
-          ":end": "2023-08-07"
+          ":start": config.START_DATE,
+          ":end": config.END_DATE,
         }
       };
 
       data = await docClient.scan(params).promise();
       let result = await services.getDispositionValues();
-
       data.Items.map((val) => {  
+        // console.log(data.Items);
         let subCat = services.getSubCategory(result, val.disposition);
         let cat = services.getCategory(result, subCat); 
 
@@ -49,9 +52,9 @@ const getAgentInteractionData = async () => {
       });
 
       lastEvaluatedKey = data.LastEvaluatedKey;
-      console.log("length of retrived jsoncontent per batch", allRecords.length);
+      console.log("length of retrieved jsoncontent per batch", allRecords);
     } while (lastEvaluatedKey);
-    console.log("length of retrived jsoncontent", allRecords.length);
+    console.log("length of retrieved jsoncontent", allRecords.length);
     return allRecords;
   } catch(err){
     console.error(err);
@@ -59,33 +62,56 @@ const getAgentInteractionData = async () => {
 };
 
 const putRecords = async () => {
-  let data = await getAgentInteractionData();
-  
-  const batchSize = 25;
-  let batches = [];
+  // let data = await getAgentInteractionData();
+  try{
+    let data = dataDump.data.Items;
 
-  for(let i=0; i< data.length; i+=batchSize){
-    const batch = data.slice(i, i+batchSize);
-    batches.push(batch);
-  }
+    const batchSize = 25;
+    let batches = [];
+    const errorLogs = [];
 
-  for(const batch of batches){   
-    let params = {
-      RequestItems: {
-        "TableName": batch.map((item) => ({
-          PutRequest:{
-            Item: item,
-          }
-        }))
+    for(let i=0; i< data.length; i+=batchSize){
+      const batch = data.slice(i, i+batchSize);
+      batches.push(batch);
+    }
+
+    for(const batch of batches){   
+      let params = {
+        RequestItems: {
+          [config.DISPOSOTION_REPORTING_TABLE]: batch.map((item) => ({
+            PutRequest:{
+              Item: item,
+            }
+          }))
+        }
       }
+
+      docClient.batchWrite(params,(err, data) => {
+        if(err){
+          console.log(err.code);
+          if(err.code === 'ValidationException'){
+            console.log('simulating unprocessed items....');
+            params
+            .RequestItems[config.DISPOSOTION_REPORTING_TABLE]
+            .map(val => {
+              errorLogs.push(val.PutRequest.Item);
+              services.writeFile(errorLogs);
+            })
+            console.log("Total unprocessed items ==> ",errorLogs.length, "pushed to json file");
+            return errorLogs;
+          }
+        } else{
+          return data
+        }
+      });
+      
+      console.log("Inserted ", batch.length, " records");
     }
 
-    try{
-      await docClient.batchWrite(params).promise();
-      console.log("Inserted ", batch.length, " records");
-    } catch(err){
-      console.error("error", {"errCode":err.code,"statusCode": err.statusCode});
-    }
+    
+
+  } catch(err){
+    console.error("error", err, {"errCode":err.code,"statusCode": err.statusCode});
   }
 }
 
